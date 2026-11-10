@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "0 12 * * 1"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/canary-windows.yml'
+      - '.github/actions/setup-windows-native/**'
 
 permissions:
   contents: read
