@@ -1,0 +1,49 @@
+name: Windows toolchain canary
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/canary-windows.yml'
+      - '.github/actions/setup-windows-native/**'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-canary:
+    name: Windows toolchain canary
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      OBS_VERSION: "32.2.1"
+      OBS_QT_VERSION: "6.11.0"
+      OBS_BUILD_DIR: C:\obs-studio-canary\build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Windows native build environment
+        id: windows-native
+        uses: ./.github/actions/setup-windows-native
+        with:
+          qt_version: ${{ env.OBS_QT_VERSION }}
+
+      - name: Clone OBS Studio
+        shell: pwsh
+        run: git clone --depth 1 --branch "$env:OBS_VERSION" https://github.com/obsproject/obs-studio.git C:\obs-studio-canary
+
+      - name: Configure OBS Studio canary target
+        shell: pwsh
+        run: |
+          cmake -S C:\obs-studio-canary -B "$env:OBS_BUILD_DIR" `
+            -G "Ninja Multi-Config" `
+            -DCMAKE_SYSTEM_VERSION:STRING="$env:OBS_WINDOWS_SDK_VERSION" `
+            -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION:STRING="$env:OBS_WINDOWS_SDK_VERSION" `
+            -DCMAKE_VS_PLATFORM_NAME:STRING=X64 `
+            -DOBS_PARENT_ARCHITECTURE:STRING=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

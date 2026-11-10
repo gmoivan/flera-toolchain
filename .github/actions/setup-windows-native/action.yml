@@ -1,0 +1,213 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+name: "Setup Windows Native Build Environment"
+description: "Prepares Qt, MSVC x64, and complete Windows SDK for OBS Studio and plugin builds on Windows."
+
+inputs:
+  qt_version:
+    description: "Qt version to install"
+    required: false
+    default: "6.11.0"
+  qt_modules:
+    description: "Additional Qt modules to install"
+    required: false
+    default: "qtnetworkauth qtwebsockets"
+  qt_cache:
+    description: "Whether to enable Qt caching"
+    required: false
+    default: "true"
+  msvc_arch:
+    description: "MSVC architecture target"
+    required: false
+    default: "x64"
+  select_windows_sdk:
+    description: "Whether to search and export the latest complete Windows SDK"
+    required: false
+    default: "true"
+  enable_sccache:
+    description: "Whether to install and export sccache for MSVC compilation"
+    required: false
+    default: "false"
+  sccache_version:
+    description: "sccache version to download if enabled"
+    required: false
+    default: "v0.8.2"
+  enable_full_deps:
+    description: "Whether to download and configure OpenCV, FFmpeg, and Whisper model for Windows builds"
+    required: false
+    default: "false"
+  opencv_version:
+    description: "OpenCV version for Full package"
+    required: false
+    default: "4.10.0"
+  opencv_release:
+    description: "flera-toolchain release tag of the OpenCV archive"
+    required: false
+    default: "opencv-4.10.0-r1"
+  opencv_sha256:
+    description: "SHA-256 of the OpenCV Windows x64 archive"
+    required: false
+    default: "9e07cf01e78beec97ff336573827fc5c5d28b7222322867bd6718593cd3cf6ee"
+  ffmpeg_version:
+    description: "FFmpeg version for Full package"
+    required: false
+    default: "7.1"
+  ffmpeg_release:
+    description: "flera-toolchain release tag of the FFmpeg archive"
+    required: false
+    default: "ffmpeg-7.1-r1"
+  ffmpeg_sha256:
+    description: "SHA-256 of the FFmpeg Windows x64 archive"
+    required: false
+    default: "9e091d556d0319b17e7730f26af088f18d4c7be85a25a5d90df9bfd52bd76257"
+  whisper_model_revision:
+    description: "Git revision of the whisper.cpp repo on Hugging Face"
+    required: false
+    default: "5359861c739e955e79d9a303bcbc70fb988958b1"
+  whisper_model_sha256:
+    description: "SHA-256 of the ggml-base.bin model"
+    required: false
+    default: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+
+outputs:
+  windows_sdk_version:
+    description: "Selected Windows SDK version (e.g. 10.0.22621.0)"
+    value: ${{ steps.windows-sdk.outputs.version }}
+  qt_version:
+    description: "Configured Qt version"
+    value: ${{ inputs.qt_version }}
+  opencv_dir:
+    description: "OpenCV CMake configuration directory"
+    value: ${{ steps.full-deps.outputs.opencv_dir }}
+  ffmpeg_dir:
+    description: "FFmpeg directory"
+    value: ${{ steps.full-deps.outputs.ffmpeg_dir }}
+  whisper_model_path:
+    description: "Path to ggml-base.bin model"
+    value: ${{ steps.whisper-model.outputs.whisper_model_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+      with:
+        version: ${{ inputs.qt_version }}
+        arch: win64_msvc2022_64
+        modules: ${{ inputs.qt_modules }}
+        # Pinned upstream fix for Qt 6.11's flattened Windows repository layout.
+        aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
+        cache: ${{ inputs.qt_cache == 'true' }}
+
+    - name: Setup MSVC environment
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      with:
+        arch: ${{ inputs.msvc_arch }}
+
+    - name: Select complete Windows SDK
+      if: ${{ inputs.select_windows_sdk == 'true' }}
+      id: windows-sdk
+      shell: pwsh
+      run: |
+        $libRoot = 'C:\Program Files (x86)\Windows Kits\10\Lib'
+        $includeRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+        $minimum = [version]'10.0.20348.0'
+        $sdk = Get-ChildItem $libRoot -Directory | Where-Object {
+          $parsed = $null
+          [version]::TryParse($_.Name, [ref]$parsed) -and
+            $parsed -ge $minimum -and
+            (Test-Path (Join-Path $_.FullName 'um')) -and
+            (Test-Path (Join-Path (Join-Path $includeRoot $_.Name) 'um'))
+        } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+        if (-not $sdk) { throw 'No complete Windows SDK 10.0.20348.0 or newer was found.' }
+        "OBS_WINDOWS_SDK_VERSION=$($sdk.Name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        "version=$($sdk.Name)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    - name: Setup sccache compiler cache
+      if: ${{ inputs.enable_sccache == 'true' }}
+      shell: pwsh
+      run: |
+        $sccacheDir = 'C:\tools\sccache'
+        if (-not (Test-Path "$sccacheDir\sccache.exe")) {
+          New-Item -ItemType Directory -Force -Path $sccacheDir | Out-Null
+          $url = "https://github.com/mozilla/sccache/releases/download/${{ inputs.sccache_version }}/sccache-${{ inputs.sccache_version }}-x86_64-pc-windows-msvc.tar.gz"
+          curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\sccache.tar.gz" $url
+          tar -xzf "$env:RUNNER_TEMP\sccache.tar.gz" -C $env:RUNNER_TEMP
+          $extractedDir = Join-Path $env:RUNNER_TEMP "sccache-${{ inputs.sccache_version }}-x86_64-pc-windows-msvc"
+          Move-Item "$extractedDir\sccache.exe" "$sccacheDir\sccache.exe" -Force
+        }
+        $sccacheDir | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+        "SCCACHE_CACHE_SIZE=500M" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Setup Full dependencies (OpenCV and FFmpeg)
+      if: ${{ inputs.enable_full_deps == 'true' }}
+      id: full-deps
+      shell: pwsh
+      run: |
+        function Assert-Sha256([string]$Path, [string]$Expected, [string]$Name) {
+          $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $Expected.ToLowerInvariant()) { throw "$Name hash mismatch: expected $Expected, got $actual" }
+        }
+
+        $toolsDir = 'C:\tools'
+        New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+
+        # 1. OpenCV for Windows x64
+        $opencvDir = "$toolsDir\opencv"
+        if (-not (Test-Path "$opencvDir\lib\cmake\opencv4\OpenCVConfig.cmake") -and -not (Test-Path "$opencvDir\OpenCVConfig.cmake")) {
+          $opencvUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/${{ inputs.opencv_release }}/opencv-${{ inputs.opencv_version }}-windows-x64.zip"
+          curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\opencv-win64.zip" $opencvUrl
+          Assert-Sha256 "$env:RUNNER_TEMP\opencv-win64.zip" '${{ inputs.opencv_sha256 }}' 'OpenCV'
+          Expand-Archive -Path "$env:RUNNER_TEMP\opencv-win64.zip" -DestinationPath $opencvDir -Force
+        }
+        $opencvCmakeDir = if (Test-Path "$opencvDir\lib\cmake\opencv4\OpenCVConfig.cmake") {
+          "$opencvDir\lib\cmake\opencv4"
+        } elseif (Test-Path "$opencvDir\lib\OpenCVConfig.cmake") {
+          "$opencvDir\lib"
+        } else {
+          $opencvDir
+        }
+        "OpenCV_DIR=$opencvCmakeDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        "opencv_dir=$opencvCmakeDir" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        if (Test-Path "$opencvDir\bin") {
+          "$opencvDir\bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+        # 2. FFmpeg for Windows x64
+        $ffmpegDir = "$toolsDir\ffmpeg"
+        if (-not (Test-Path "$ffmpegDir\include\libavformat\avformat.h")) {
+          $ffmpegUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/${{ inputs.ffmpeg_release }}/ffmpeg-${{ inputs.ffmpeg_version }}-windows-x64.zip"
+          curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\ffmpeg-win64.zip" $ffmpegUrl
+          Assert-Sha256 "$env:RUNNER_TEMP\ffmpeg-win64.zip" '${{ inputs.ffmpeg_sha256 }}' 'FFmpeg'
+          Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg-win64.zip" -DestinationPath $ffmpegDir -Force
+        }
+        "FFMPEG_DIR=$ffmpegDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        "ffmpeg_dir=$ffmpegDir" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        if (Test-Path "$ffmpegDir\lib\pkgconfig") {
+          $currentPkgConfig = $env:PKG_CONFIG_PATH
+          $newPkgConfig = if ($currentPkgConfig) { "$ffmpegDir\lib\pkgconfig;$currentPkgConfig" } else { "$ffmpegDir\lib\pkgconfig" }
+          "PKG_CONFIG_PATH=$newPkgConfig" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        }
+        if (Test-Path "$ffmpegDir\bin") {
+          "$ffmpegDir\bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+    - name: Download Whisper base model
+      if: ${{ inputs.enable_full_deps == 'true' }}
+      id: whisper-model
+      shell: pwsh
+      run: |
+        $modelsDir = 'C:\tools\models'
+        New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
+        $modelPath = "$modelsDir\ggml-base.bin"
+        if (-not (Test-Path $modelPath)) {
+          $whisperRevision = '${{ inputs.whisper_model_revision }}'
+          $whisperUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/$whisperRevision/ggml-base.bin"
+          curl -fsSL --retry 3 -o $modelPath $whisperUrl
+        }
+        $expectedHash = '${{ inputs.whisper_model_sha256 }}'.ToLowerInvariant()
+        $actualHash = (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+          throw "Whisper model hash mismatch: expected $expectedHash, got $actualHash"
+        }
+        "WHISPER_MODEL_PATH=$modelPath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        "whisper_model_path=$modelPath" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
