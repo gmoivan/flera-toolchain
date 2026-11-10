@@ -1,0 +1,305 @@
+name: Package Qt and Whisper
+on:
+  workflow_dispatch:
+    inputs:
+      qt_version:
+        description: 'Qt Version (e.g., 6.11.0)'
+        required: true
+        default: '6.11.0'
+      qt_modules:
+        description: 'Qt Modules (space-separated)'
+        required: false
+        default: 'qtnetworkauth qtwebsockets'
+      whisper_model_revision:
+        description: 'Whisper.cpp HuggingFace Git Revision'
+        required: true
+        default: '5359861c739e955e79d9a303bcbc70fb988958b1'
+      whisper_model_sha256:
+        description: 'Expected SHA-256 of ggml-base.bin'
+        required: true
+        default: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'
+      package_qt:
+        description: 'Package Qt (Linux and Windows)'
+        type: boolean
+        required: false
+        default: true
+      package_whisper:
+        description: 'Package Whisper base model'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  package-qt-linux:
+    name: Package Qt (Linux x64)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_qt }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      QT_VERSION: ${{ inputs.qt_version || '6.11.0' }}
+      QT_MODULES: ${{ inputs.qt_modules || 'qtnetworkauth qtwebsockets' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Qt
+        id: setup-qt
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: linux_gcc_64
+          dir: ${{ runner.temp }}/Qt
+          modules: ${{ env.QT_MODULES }}
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
+          cache: false
+
+      - name: Locate and configure Qt
+        run: |
+          qt_dir="${QT_ROOT_DIR:-}"
+          if [ -z "$qt_dir" ] || [ ! -d "$qt_dir" ]; then
+            qt_dir="${RUNNER_TEMP}/Qt/${QT_VERSION}/gcc_64"
+          fi
+          if [ ! -d "$qt_dir" ]; then
+            qt_dir=$(find "${RUNNER_TEMP}/Qt" -type d -name "gcc_64" | head -n 1)
+          fi
+          if [ -z "$qt_dir" ] || [ ! -d "$qt_dir" ]; then
+            echo "Qt Linux directory not found" >&2
+            exit 1
+          fi
+          echo "Found Qt Linux at: $qt_dir"
+          echo "QT_DIR=$qt_dir" >> "$GITHUB_ENV"
+
+          if [ ! -f "$qt_dir/bin/qt.conf" ]; then
+            mkdir -p "$qt_dir/bin"
+            printf "[Paths]\nPrefix = ..\n" > "$qt_dir/bin/qt.conf"
+          fi
+
+      - name: Compress Qt Linux
+        run: |
+          archive="qt-${QT_VERSION}-linux-x64.tar.gz"
+          tar -czvf "$archive" -C "$QT_DIR" .
+          echo "QT_ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Write release manifest
+        shell: pwsh
+        run: |
+          ./scripts/write-release-manifest.ps1 `
+            -Asset "qt-$env:QT_VERSION-linux-x64.tar.gz" `
+            -Dependency qt `
+            -Version "$env:QT_VERSION" `
+            -Tag "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER" `
+            -UpstreamUrl https://download.qt.io/online/qtsdkrepository/linux_x64/desktop/ `
+            -UpstreamRef "$env:QT_VERSION" `
+            -Parameters @("platform=linux-x64", "arch=linux_gcc_64", "modules=$env:QT_MODULES")
+
+      - name: Upload Qt Linux artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qt-${{ env.QT_VERSION }}-linux-x64
+          path: |
+            qt-${{ env.QT_VERSION }}-linux-x64.tar.gz
+            qt-${{ env.QT_VERSION }}-linux-x64.tar.gz.manifest.json
+
+      - name: Create GitHub release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="qt-${QT_VERSION}-r${GITHUB_RUN_NUMBER}"
+          name="Qt ${QT_VERSION} r${GITHUB_RUN_NUMBER}"
+          archive="qt-${QT_VERSION}-linux-x64.tar.gz"
+          manifest="${archive}.manifest.json"
+
+          for i in {1..5}; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              if gh release upload "$tag" "$archive" "$manifest"; then
+                exit 0
+              fi
+            else
+              if gh release create "$tag" "$archive" "$manifest" \
+                --title "$name" \
+                --notes "Prebuilt Qt ${QT_VERSION} binaries for Linux x64 and Windows x64"; then
+                exit 0
+              fi
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "Failed to create or upload release after 5 attempts"
+              exit 1
+            fi
+            sleep $((5 * i))
+          done
+
+  package-qt-windows:
+    name: Package Qt (Windows x64)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_qt }}
+    runs-on: windows-2025
+    timeout-minutes: 40
+    env:
+      QT_VERSION: ${{ inputs.qt_version || '6.11.0' }}
+      QT_MODULES: ${{ inputs.qt_modules || 'qtnetworkauth qtwebsockets' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Qt
+        id: setup-qt
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          dir: ${{ runner.temp }}\Qt
+          modules: ${{ env.QT_MODULES }}
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
+          cache: false
+
+      - name: Locate and configure Qt
+        shell: pwsh
+        run: |
+          $qtDir = $env:QT_ROOT_DIR
+          if (-not $qtDir -or -not (Test-Path $qtDir)) {
+            $qtDir = "$env:RUNNER_TEMP\Qt\$env:QT_VERSION\msvc2022_64"
+          }
+          if (-not (Test-Path $qtDir)) {
+            $candidate = Get-ChildItem -Path "$env:RUNNER_TEMP\Qt" -Recurse -Directory -Filter "msvc2022_64" | Select-Object -First 1
+            if ($candidate) { $qtDir = $candidate.FullName }
+          }
+          if (-not (Test-Path $qtDir)) { throw "Qt Windows directory not found." }
+          Write-Host "Found Qt Windows at: $qtDir"
+          "QT_DIR=$qtDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $qtConf = "$qtDir\bin\qt.conf"
+          if (-not (Test-Path $qtConf)) {
+            New-Item -ItemType Directory -Force -Path "$qtDir\bin" | Out-Null
+            "[Paths]`r`nPrefix = .." | Out-File -LiteralPath $qtConf -Encoding ascii
+          }
+
+      - name: Compress Qt Windows
+        shell: pwsh
+        run: |
+          $archive = "qt-$env:QT_VERSION-windows-x64.zip"
+          Write-Host "Compressing Qt Windows with 7z..."
+          7z a -tzip -mx=7 "$archive" "$env:QT_DIR\*"
+          if ($LASTEXITCODE -ne 0) { throw "7z compression failed." }
+          "QT_ARCHIVE=$archive" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Write release manifest
+        shell: pwsh
+        run: |
+          ./scripts/write-release-manifest.ps1 `
+            -Asset "qt-$env:QT_VERSION-windows-x64.zip" `
+            -Dependency qt `
+            -Version "$env:QT_VERSION" `
+            -Tag "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER" `
+            -UpstreamUrl https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/ `
+            -UpstreamRef "$env:QT_VERSION" `
+            -Parameters @("platform=windows-x64", "arch=win64_msvc2022_64", "modules=$env:QT_MODULES")
+
+      - name: Upload Qt Windows artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qt-${{ env.QT_VERSION }}-windows-x64
+          path: |
+            qt-${{ env.QT_VERSION }}-windows-x64.zip
+            qt-${{ env.QT_VERSION }}-windows-x64.zip.manifest.json
+
+      - name: Create GitHub release and upload asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER"
+          $name = "Qt $env:QT_VERSION r$env:GITHUB_RUN_NUMBER"
+          $archive = "qt-$env:QT_VERSION-windows-x64.zip"
+          $assets = @($archive, "$archive.manifest.json")
+
+          for ($i = 1; $i -le 5; $i++) {
+            gh release view $tag 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              gh release upload $tag @assets
+            } else {
+              gh release create $tag @assets `
+                --title $name `
+                --notes "Prebuilt Qt $env:QT_VERSION binaries for Linux x64 and Windows x64"
+            }
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($i -eq 5) {
+              Write-Error "Failed to create or upload release after 5 attempts"
+              exit 1
+            }
+            Start-Sleep -Seconds (5 * $i)
+          }
+
+  package-whisper-model:
+    name: Package Whisper Model (ggml-base.bin)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_whisper }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      WHISPER_REVISION: ${{ inputs.whisper_model_revision || '5359861c739e955e79d9a303bcbc70fb988958b1' }}
+      WHISPER_EXPECTED_SHA256: ${{ inputs.whisper_model_sha256 || '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download and verify Whisper model
+        run: |
+          url="https://huggingface.co/ggerganov/whisper.cpp/resolve/${WHISPER_REVISION}/ggml-base.bin"
+          echo "Downloading $url..."
+          curl -fsSL --retry 3 -o "ggml-base.bin" "$url"
+          actual_hash=$(sha256sum "ggml-base.bin" | awk '{print $1}')
+          if [ "$actual_hash" != "$WHISPER_EXPECTED_SHA256" ]; then
+            echo "Hash mismatch: expected $WHISPER_EXPECTED_SHA256, got $actual_hash" >&2
+            exit 1
+          fi
+          echo "Whisper model SHA-256 verified: $actual_hash"
+
+      - name: Write release manifest
+        shell: pwsh
+        run: |
+          ./scripts/write-release-manifest.ps1 `
+            -Asset "ggml-base.bin" `
+            -Dependency "whisper-model" `
+            -Version "base" `
+            -Tag "whisper-base-r$env:GITHUB_RUN_NUMBER" `
+            -UpstreamUrl "https://huggingface.co/ggerganov/whisper.cpp" `
+            -UpstreamRef "$env:WHISPER_REVISION" `
+            -UpstreamCommit "$env:WHISPER_REVISION" `
+            -Parameters @("model=base", "format=ggml", "filename=ggml-base.bin")
+
+      - name: Upload Whisper model artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: whisper-model-base
+          path: |
+            ggml-base.bin
+            ggml-base.bin.manifest.json
+
+      - name: Create GitHub release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="whisper-base-r${GITHUB_RUN_NUMBER}"
+          name="Whisper Model Base r${GITHUB_RUN_NUMBER}"
+          archive="ggml-base.bin"
+          manifest="${archive}.manifest.json"
+
+          for i in {1..5}; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              if gh release upload "$tag" "$archive" "$manifest"; then
+                exit 0
+              fi
+            else
+              if gh release create "$tag" "$archive" "$manifest" \
+                --title "$name" \
+                --notes "Whisper ggml-base.bin model from ggerganov/whisper.cpp revision ${WHISPER_REVISION}"; then
+                exit 0
+              fi
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "Failed to create or upload release after 5 attempts"
+              exit 1
+            fi
+            sleep $((5 * i))
+          done
