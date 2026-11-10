@@ -65,7 +65,7 @@ jobs:
 
           Copy-Item -Path "$($topDir.FullName)\*" -Destination $cleanDir -Recurse -Force
 
-          # Verify mandatory headers and import libraries for obs-noter
+          # Verify mandatory headers and import libraries for Notas para OBS
           $requiredFiles = @(
             "$cleanDir\include\libavformat\avformat.h",
             "$cleanDir\include\libavcodec\avcodec.h",

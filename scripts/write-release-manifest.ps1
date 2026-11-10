@@ -46,7 +46,7 @@ $upstream = [ordered]@{ url = $UpstreamUrl; ref = $UpstreamRef; commit = $Upstre
 if ($SourceArchive) { $upstream['sourceArchiveSha256'] = Get-Sha256 $SourceArchive }
 
 $manifest = [ordered]@{
-  schema = 'obs-noter-toolchain.release-manifest/v1'
+  schema = 'flera-toolchain.release-manifest/v1'
   dependency = $Dependency
   version = $Version
   tag = $Tag
