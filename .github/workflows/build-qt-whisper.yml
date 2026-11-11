@@ -93,7 +93,8 @@ jobs:
             -Tag "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER" `
             -UpstreamUrl https://download.qt.io/online/qtsdkrepository/linux_x64/desktop/ `
             -UpstreamRef "$env:QT_VERSION" `
-            -Parameters @("platform=linux-x64", "arch=linux_gcc_64", "modules=$env:QT_MODULES")
+            -Parameters @("platform=linux-x64", "arch=linux_gcc_64", "modules=$env:QT_MODULES") `
+            -Repository "gmoivan/flera-toolchain"
 
       - name: Upload Qt Linux artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -102,34 +103,6 @@ jobs:
           path: |
             qt-${{ env.QT_VERSION }}-linux-x64.tar.gz
             qt-${{ env.QT_VERSION }}-linux-x64.tar.gz.manifest.json
-
-      - name: Create GitHub release and upload asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="qt-${QT_VERSION}-r${GITHUB_RUN_NUMBER}"
-          name="Qt ${QT_VERSION} r${GITHUB_RUN_NUMBER}"
-          archive="qt-${QT_VERSION}-linux-x64.tar.gz"
-          manifest="${archive}.manifest.json"
-
-          for i in {1..5}; do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              if gh release upload "$tag" "$archive" "$manifest"; then
-                exit 0
-              fi
-            else
-              if gh release create "$tag" "$archive" "$manifest" \
-                --title "$name" \
-                --notes "Prebuilt Qt ${QT_VERSION} binaries for Linux x64 and Windows x64"; then
-                exit 0
-              fi
-            fi
-            if [ "$i" -eq 5 ]; then
-              echo "Failed to create or upload release after 5 attempts"
-              exit 1
-            fi
-            sleep $((5 * i))
-          done
 
   package-qt-windows:
     name: Package Qt (Windows x64)
@@ -194,7 +167,8 @@ jobs:
             -Tag "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER" `
             -UpstreamUrl https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/ `
             -UpstreamRef "$env:QT_VERSION" `
-            -Parameters @("platform=windows-x64", "arch=win64_msvc2022_64", "modules=$env:QT_MODULES")
+            -Parameters @("platform=windows-x64", "arch=win64_msvc2022_64", "modules=$env:QT_MODULES") `
+            -Repository "gmoivan/flera-toolchain"
 
       - name: Upload Qt Windows artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -204,32 +178,45 @@ jobs:
             qt-${{ env.QT_VERSION }}-windows-x64.zip
             qt-${{ env.QT_VERSION }}-windows-x64.zip.manifest.json
 
-      - name: Create GitHub release and upload asset
-        shell: pwsh
+  publish-qt:
+    name: Publish Qt Release
+    needs: [package-qt-linux, package-qt-windows]
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_qt }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: qt-${{ inputs.qt_version || '6.11.0' }}-linux-x64
+          path: dist
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: qt-${{ inputs.qt_version || '6.11.0' }}-windows-x64
+          path: dist
+
+      - name: Create GitHub release and upload all assets
         env:
           GH_TOKEN: ${{ github.token }}
+          QT_VERSION: ${{ inputs.qt_version || '6.11.0' }}
         run: |
-          $tag = "qt-$env:QT_VERSION-r$env:GITHUB_RUN_NUMBER"
-          $name = "Qt $env:QT_VERSION r$env:GITHUB_RUN_NUMBER"
-          $archive = "qt-$env:QT_VERSION-windows-x64.zip"
-          $assets = @($archive, "$archive.manifest.json")
+          tag="qt-${QT_VERSION}-r${GITHUB_RUN_NUMBER}"
+          name="Qt ${QT_VERSION} r${GITHUB_RUN_NUMBER}"
 
-          for ($i = 1; $i -le 5; $i++) {
-            gh release view $tag 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-              gh release upload $tag @assets
-            } else {
-              gh release create $tag @assets `
-                --title $name `
-                --notes "Prebuilt Qt $env:QT_VERSION binaries for Linux x64 and Windows x64"
-            }
-            if ($LASTEXITCODE -eq 0) { exit 0 }
-            if ($i -eq 5) {
-              Write-Error "Failed to create or upload release after 5 attempts"
+          for i in {1..5}; do
+            if gh release create "$tag" dist/* \
+              --title "$name" \
+              --notes "Prebuilt Qt ${QT_VERSION} binaries for Linux x64 and Windows x64"; then
+              exit 0
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "Failed to create release after 5 attempts"
               exit 1
-            }
-            Start-Sleep -Seconds (5 * $i)
-          }
+            fi
+            sleep $((5 * i))
+          done
 
   package-whisper-model:
     name: Package Whisper Model (ggml-base.bin)
@@ -266,7 +253,8 @@ jobs:
             -UpstreamUrl "https://huggingface.co/ggerganov/whisper.cpp" `
             -UpstreamRef "$env:WHISPER_REVISION" `
             -UpstreamCommit "$env:WHISPER_REVISION" `
-            -Parameters @("model=base", "format=ggml", "filename=ggml-base.bin")
+            -Parameters @("model=base", "format=ggml", "filename=ggml-base.bin") `
+            -Repository "gmoivan/flera-toolchain"
 
       - name: Upload Whisper model artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -286,19 +274,13 @@ jobs:
           manifest="${archive}.manifest.json"
 
           for i in {1..5}; do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              if gh release upload "$tag" "$archive" "$manifest"; then
-                exit 0
-              fi
-            else
-              if gh release create "$tag" "$archive" "$manifest" \
-                --title "$name" \
-                --notes "Whisper ggml-base.bin model from ggerganov/whisper.cpp revision ${WHISPER_REVISION}"; then
-                exit 0
-              fi
+            if gh release create "$tag" "$archive" "$manifest" \
+              --title "$name" \
+              --notes "Whisper ggml-base.bin model from ggerganov/whisper.cpp revision ${WHISPER_REVISION}"; then
+              exit 0
             fi
             if [ "$i" -eq 5 ]; then
-              echo "Failed to create or upload release after 5 attempts"
+              echo "Failed to create release after 5 attempts"
               exit 1
             fi
             sleep $((5 * i))
