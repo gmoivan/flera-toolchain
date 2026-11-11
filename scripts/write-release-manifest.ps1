@@ -9,7 +9,8 @@ param(
   [string]$UpstreamRef = '',
   [string]$UpstreamCommit = '',
   [string]$SourceArchive = '',
-  [string[]]$Parameters = @()
+  [string[]]$Parameters = @(),
+  [string]$Repository = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +46,14 @@ $assetItem = Get-Item -LiteralPath $Asset
 $upstream = [ordered]@{ url = $UpstreamUrl; ref = $UpstreamRef; commit = $UpstreamCommit }
 if ($SourceArchive) { $upstream['sourceArchiveSha256'] = Get-Sha256 $SourceArchive }
 
+$manifestRepository = if ($Repository) {
+  $Repository
+} elseif ($env:GITHUB_REPOSITORY -and $env:GITHUB_REPOSITORY -ne 'gmoivan/toolchain') {
+  $env:GITHUB_REPOSITORY
+} else {
+  'gmoivan/flera-toolchain'
+}
+
 $manifest = [ordered]@{
   schema = 'flera-toolchain.release-manifest/v1'
   dependency = $Dependency
@@ -54,7 +63,7 @@ $manifest = [ordered]@{
   parameters = $Parameters
   tools = $tools
   build = [ordered]@{
-    repository = $env:GITHUB_REPOSITORY
+    repository = $manifestRepository
     commit = $env:GITHUB_SHA
     workflow = $env:GITHUB_WORKFLOW
     runId = $env:GITHUB_RUN_ID

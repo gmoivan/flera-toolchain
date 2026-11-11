@@ -106,7 +106,8 @@ jobs:
               "targets=libobs,obs-frontend-api",
               "qt=$env:OBS_QT_VERSION",
               "windowsSdk=$env:OBS_WINDOWS_SDK_VERSION"
-            )
+            ) `
+            -Repository "gmoivan/flera-toolchain"
           "RELEASE_TAG=$tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload SDK as artifact
